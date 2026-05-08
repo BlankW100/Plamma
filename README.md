@@ -93,25 +93,24 @@ SocksPort 9050
 ControlPort 9051
 ```
 
-On **Windows**, update `launcher.bat` with your Tor paths:
+Set your Tor paths in `plamma.env` (works on all platforms):
 
-```batch
-set "TOR_EXE=C:\path\to\tor.exe"
-set "TOR_TORRC=C:\path\to\torrc"
+```bash
+TOR_EXE=/path/to/tor
+TOR_TORRC=/path/to/torrc
 ```
 
 ---
 
 ## Running Plamma
 
-### Windows (recommended)
+```bash
+python launcher.py
+```
 
-Double-click `launcher.bat`. It will:
-1. Check if Tor is running and wait for circuits to build
-2. Start Ollama if it is not already running
-3. Launch Plamma
+This will check/start Tor, check/start Ollama, then launch Plamma — on Windows, macOS, and Linux.
 
-### From source (any platform)
+### Run without the launcher
 
 ```bash
 python plamma.py
