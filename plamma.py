@@ -69,19 +69,19 @@ HELP_TEXT = """\
   [yellow]/img[/yellow]                         Open file picker — choose an image, then ask a question
   [yellow]/showthink[/yellow]                   Toggle: show or hide the model's thinking process
   [yellow]/session -s[/yellow]                  Encrypt & save session — prints codename + one-time token
-  [yellow]/session -c \[token][/yellow]          Restore session directly by token
-  [yellow]/session -c \[codename][/yellow]       Restore session by codename (prompts for token)
-  [yellow]/session -d \[codename][/yellow]       Permanently delete a saved session
-  [yellow]/log \[file][/yellow]                  Export session to plaintext markdown
+  [yellow]/session -c \\[token][/yellow]          Restore session directly by token
+  [yellow]/session -c \\[codename][/yellow]       Restore session by codename (prompts for token)
+  [yellow]/session -d \\[codename][/yellow]       Permanently delete a saved session
+  [yellow]/log \\[file][/yellow]                  Export session to plaintext markdown
   [yellow]/clear[/yellow]                       Wipe in-memory chat history
   [yellow]/tor[/yellow]                         Check Tor connection status
   [yellow]/newtor[/yellow]                      Rotate Tor circuit (new exit node)
   [yellow]/model[/yellow]                       Show current model
   [yellow]/model -a[/yellow]                    List all downloaded models (highlights recommended)
-  [yellow]/model \[name][/yellow]               Switch to a different model + save to plamma.env
+  [yellow]/model \\[name][/yellow]               Switch to a different model + save to plamma.env
   [yellow]/nuke[/yellow]                        Delete all sessions + self-destruct (prompts confirm)
   [yellow]/nuke -f[/yellow]                     Same as /nuke but skips confirmation
-  [yellow]/h \[command][/yellow]                 Detailed help for a specific command
+  [yellow]/h \\[command][/yellow]                 Detailed help for a specific command
   [yellow]/help[/yellow]                        Show this help
   [yellow]/exit[/yellow]                        Exit Plamma
 
@@ -101,15 +101,15 @@ DETAILED_HELP: dict[str, str] = {
     Store both safely — the token is [bold red]never saved anywhere[/bold red] and cannot be recovered.
     The vault file is named after a hash of the token, not a passphrase — reveals nothing without the token.
 
-  [yellow]/session -c \[token][/yellow]
+  [yellow]/session -c \\[token][/yellow]
     Restores a session directly using the 44-char token you saved.
 
-  [yellow]/session -c \[codename][/yellow]
+  [yellow]/session -c \\[codename][/yellow]
     Looks up the vault by codename, then prompts for the token inline.
     Useful when you remember the codename but want to avoid pasting the token visibly.
     The token is verified against the stored hash before any decryption attempt.
 
-  [yellow]/session -d \[codename][/yellow]
+  [yellow]/session -d \\[codename][/yellow]
     Permanently deletes the vault file and removes the codename from the registry.
     Irreversible — the encrypted data is gone.
 
@@ -127,7 +127,7 @@ DETAILED_HELP: dict[str, str] = {
   A detached background process handles deletion after Plamma exits, so the
   running executable can be removed too.
 
-[dim]Cannot be undone. Use /session -d \[codename] to remove individual vaults instead.[/dim]""",
+[dim]Cannot be undone. Use /session -d \\[codename] to remove individual vaults instead.[/dim]""",
 
     "log": """\
 [bold cyan]/log[/bold cyan] — Export session to plaintext Markdown
@@ -145,7 +145,7 @@ DETAILED_HELP: dict[str, str] = {
   [yellow]/d <query>[/yellow]    Dark web .onion only — via Tor (Ahmia, Haystak).
   [yellow]/sd <query>[/yellow]   Both surfaces simultaneously.
 
-  Results are injected into the model's context with inline citations \[1], \[2]...
+  Results are injected into the model's context with inline citations \\[1], \\[2]...
   Sources are listed at the end of the response.
 
 [dim]Auto-search triggers when your message contains live-data keywords (price, news,
@@ -156,7 +156,7 @@ latest, current, today...) or explicit phrases (search for, find me, look up, et
 
   [yellow]/img[/yellow]                                    Opens a file picker dialog.
   [yellow]/img C:\\\\path\\\\to\\\\file.jpg[/yellow]              Analyzes the image directly.
-  [yellow]/img C:\\\\path\\\\to\\\\file.jpg \[question][/yellow]  Custom question about the image.
+  [yellow]/img C:\\\\path\\\\to\\\\file.jpg \\[question][/yellow]  Custom question about the image.
 
   Supported formats: JPG, PNG, GIF, BMP, WEBP.
   The image is base64-encoded and sent to the model in-context.""",
@@ -178,7 +178,7 @@ latest, current, today...) or explicit phrases (search for, find me, look up, et
   [yellow]/model[/yellow]              Show the currently active model.
   [yellow]/model -a[/yellow]           List all models downloaded on this machine.
                       [bold green]★[/bold green] marks abliterated / uncensored models — recommended for full functionality.
-  [yellow]/model \[name][/yellow]      Switch to the specified model immediately and save to plamma.env.
+  [yellow]/model \\[name][/yellow]      Switch to the specified model immediately and save to plamma.env.
 
 [dim]Model preference is saved in plamma.env in the Plamma directory.
 You can also set PLAMMA_MODEL as an environment variable to override it.[/dim]
@@ -799,7 +799,7 @@ def main():
         elif low.startswith("/h ") or low == "/h":
             parts = user_input.split(maxsplit=1)
             if len(parts) < 2:
-                console.print("[dim]Usage: /h \[command][/dim]")
+                console.print("[dim]Usage: /h \\[command][/dim]")
                 console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model[/yellow][/dim]")
             else:
                 key = parts[1].strip().lstrip("/").lower()
