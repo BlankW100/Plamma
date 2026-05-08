@@ -31,7 +31,7 @@ Plamma is a terminal-based AI assistant that runs entirely on your machine. It u
 |---|---|
 | [Python 3.10+](https://www.python.org/downloads/) | For running from source |
 | [Ollama](https://ollama.com) | Local LLM runtime |
-| A compatible model | Default: `huihui_ai/gemma-4-abliterated` — any Ollama model works |
+| A compatible model | Any Ollama model works — **abliterated or uncensored models recommended** (standard models may refuse requests due to built-in safety filters) |
 | [Tor](https://www.torproject.org/download/) | For anonymous search (optional but recommended) |
 
 ---
