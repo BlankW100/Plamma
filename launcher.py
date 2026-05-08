@@ -17,6 +17,29 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+
+def _apply_window_icon():
+    """Set the console window icon (taskbar + title bar) to icon.ico on Windows."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    icon_path = os.path.join(base, "icon.ico")
+    if not os.path.exists(icon_path):
+        return
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if not hwnd:
+        return
+    hicon = ctypes.windll.user32.LoadImageW(
+        None, icon_path, 1, 0, 0, 0x0010 | 0x0040
+    )
+    if hicon:
+        ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)
+        ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)
+
+
+_apply_window_icon()
+
 # ── Base directory ────────────────────────────────────────────────────────────
 # Compiled with PyInstaller: sys.executable IS the .exe — use its directory.
 # Running from source:       __file__ is launcher.py — use its directory.
@@ -165,16 +188,18 @@ def _cls():
     os.system("cls" if IS_WIN else "clear")
 
 
+_COMPACT_BANNER = r"""
+    ____  _
+   |  _ \| | __ _ _ __ ___  _ __ ___   __ _
+   | |_) | |/ _` | '_ ` _ \| '_ ` _ \ / _` |
+   |  __/| | (_| | | | | | | | | | | | (_| |
+   |_|   |_|\__,_|_| |_| |_|_| |_| |_|\__,_|
+   Private · Local · Uncensored
+"""
+
+
 def _banner():
-    banner_file = BASE / "banner.txt"
-    if banner_file.exists():
-        try:
-            print(banner_file.read_text(encoding="utf-8", errors="replace"), end="")
-        except Exception:
-            pass
-    print()
-    print("   P L A M M A  --  Private  Local  AI")
-    print()
+    print(_COMPACT_BANNER)
 
 
 def _step(n: int, name: str, msg: str):
