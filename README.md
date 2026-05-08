@@ -172,29 +172,6 @@ The session is encrypted with a randomly generated [Fernet](https://cryptography
 
 ---
 
-## Auto-Search
-
-Plamma automatically searches the web when it detects live-data intent in a message. This triggers on:
-
-- **Keywords** — `price`, `news`, `latest`, `today`, `stock`, `weather`, `current`, `internet`, `online`, etc.
-- **Phrases** — `"search for"`, `"find me"`, `"look up"`, `"check online"`, `"tell me the latest"`, `"research"`, etc.
-
-Use `/s`, `/d`, or `/sd` to force a search regardless of content.
-
----
-
-## Self-Destruct
-
-```
-/nuke
-```
-
-Deletes all session vaults and then removes the entire Plamma directory. A detached background process handles the final cleanup after Plamma exits. Use `/nuke -f` to skip the confirmation prompt.
-
-> This cannot be undone. Use `/session -d <codename>` to remove individual sessions instead.
-
----
-
 ## Privacy Notes
 
 - All web traffic from Plamma (search, stock data) routes through Tor when Tor is active
