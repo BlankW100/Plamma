@@ -1,0 +1,9 @@
+# Plamma torrc — rename to "torrc" and place next to tor.exe
+# Then run: tor.exe -f torrc
+
+SocksPort 9050
+ControlPort 9051
+CookieAuthentication 0
+
+# Optional: log to file instead of console
+# Log notice file tor.log

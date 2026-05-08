@@ -1,0 +1,12 @@
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.spec
+*.egg-info/
+.env
+*.log
+plamma_session_*.md
+.plamma/
