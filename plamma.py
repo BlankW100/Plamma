@@ -36,7 +36,9 @@ def _apply_window_icon():
 _apply_window_icon()
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 import requests
@@ -344,6 +346,19 @@ class _Spinner:
 
 # ── streaming output ──────────────────────────────────────────────────────────
 
+def _has_markdown(text: str) -> bool:
+    """True if text looks like it contains a table, code fence, or heading."""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("|") and s.endswith("|") and s.count("|") >= 3:
+            return True
+        if s.startswith("```"):
+            return True
+        if s.startswith("#") and len(s) > 1 and s[1] in "# \t":
+            return True
+    return False
+
+
 def _write(text: str):
     if not text:
         return
@@ -358,14 +373,17 @@ def stream_and_collect(messages: list[dict]) -> str:
       "think" — model reasoning; shown in dim if _SHOW_THINKING, else silent
       "text"  — final answer tokens; always shown
       "error" — always shown
+    After streaming, if the response contains Markdown tables / code fences /
+    headings, the raw text is erased and re-rendered with Rich Markdown.
     """
     global _SHOW_THINKING
     collected: list[str] = []
+    text_lines = 0  # newlines printed during the text phase
 
     spinner = _Spinner("thinking")
     spinner.start()
 
-    in_thinking   = False   # currently streaming think tokens to screen
+    in_thinking    = False
     got_first_text = False
 
     for tag, chunk in stream_response(messages, think=_SHOW_THINKING):
@@ -390,6 +408,7 @@ def stream_and_collect(messages: list[dict]) -> str:
                 spinner.stop()
                 got_first_text = True
             collected.append(chunk)
+            text_lines += chunk.count("\n")
             _write(chunk)
 
         else:  # "error"
@@ -406,7 +425,16 @@ def stream_and_collect(messages: list[dict]) -> str:
         spinner.stop()
 
     _write("\n")
-    return "".join(collected)
+    text_lines += 1  # the trailing newline
+
+    full = "".join(collected)
+    if _has_markdown(full):
+        # Erase the streamed raw text and re-render as formatted Markdown
+        sys.stdout.write(f"\033[{text_lines}A\033[J")
+        sys.stdout.flush()
+        console.print(Markdown(full))
+
+    return full
 
 
 # ── search helpers ────────────────────────────────────────────────────────────
@@ -927,21 +955,43 @@ def main():
                 if not models:
                     console.print("[red]Could not reach Ollama to list models.[/red]")
                 else:
-                    console.print("\n[bold]Installed models:[/bold]\n")
-                    for name in models:
-                        rec, label = _is_recommended(name)
-                        active = "  [bold cyan](active)[/bold cyan]" if name == llm.MODEL else ""
-                        if rec:
-                            console.print(f"  [bold green]★  {name}[/bold green]  [dim]← {label}[/dim]{active}")
-                        else:
-                            console.print(f"     {name}{active}")
+                    table = Table(
+                        show_header=True,
+                        header_style="bold cyan",
+                        show_edge=False,
+                        padding=(0, 1),
+                    )
+                    table.add_column("", width=2, no_wrap=True)
+                    table.add_column("Model", no_wrap=True)
+                    table.add_column("Type", style="dim", no_wrap=True)
+                    table.add_column("", no_wrap=True)
+
+                    # recommended first, then the rest
+                    recommended = [(n, *_is_recommended(n)) for n in models if _is_recommended(n)[0]]
+                    others      = [(n, *_is_recommended(n)) for n in models if not _is_recommended(n)[0]]
+
+                    for name, rec, label in recommended:
+                        active_str = "[bold cyan](active)[/bold cyan]" if name == llm.MODEL else ""
+                        table.add_row(
+                            "[bold green]★[/bold green]",
+                            f"[bold]{name}[/bold]",
+                            f"[green]{label}[/green]",
+                            active_str,
+                        )
+
+                    for name, rec, label in others:
+                        active_str = "[bold cyan](active)[/bold cyan]" if name == llm.MODEL else ""
+                        table.add_row(" ", name, "", active_str)
+
+                    console.print()
+                    console.print(table)
                     console.print(
-                        "\n[dim][bold green]★[/bold green] = recommended (unrestricted model)[/dim]\n"
-                        "[dim]Use [yellow]/model \[name][/yellow] to switch.[/dim]"
+                        "\n[dim][bold green]★[/bold green] = recommended (unrestricted)   "
+                        "Use [yellow]/model \\[name][/yellow] to switch.[/dim]"
                     )
                     console.print(
-                        "\n[dim][bold yellow]⚠[/bold yellow]  Standard models (Llama, Gemma, Qwen, DeepSeek, Mistral, etc.) "
-                        "have built-in safety filters that cannot be bypassed by a system prompt.[/dim]"
+                        "[dim][bold yellow]⚠[/bold yellow]  Standard models have built-in safety filters "
+                        "that cannot be bypassed by a system prompt.[/dim]"
                     )
 
             else:

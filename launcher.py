@@ -13,6 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn
+
 # ── UTF-8 output ──────────────────────────────────────────────────────────────
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -236,15 +238,19 @@ def main():
 
         # Wait for circuits (skip if Tor was not found at all)
         if tor_exe or _port_open(SOCKS_PORT):
-            print("         Waiting for circuits", end="", flush=True)
             ready = False
-            for _ in range(60):           # 60 × 4 s = up to 4 minutes
-                time.sleep(4)
-                print(".", end="", flush=True)
-                if _is_tor_routing():
-                    ready = True
-                    break
-            print()
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("  [1/3]  Tor      ....  building circuits ..."),
+                TimeElapsedColumn(),
+                transient=True,
+            ) as progress:
+                progress.add_task("", total=None)
+                for _ in range(60):       # 60 × 4 s = up to 4 minutes
+                    time.sleep(4)
+                    if _is_tor_routing():
+                        ready = True
+                        break
             _step(1, "Tor", "ready" if ready else "timeout — continuing without Tor")
 
     # ── [2/3] Ollama ──────────────────────────────────────────────────────────
@@ -269,15 +275,19 @@ def main():
         _step(2, "Ollama", "starting ...")
         _start_background([ollama, "serve"])
 
-        print("         Waiting for Ollama", end="", flush=True)
         ready = False
-        for _ in range(30):              # 30 × 2 s = up to 60 seconds
-            time.sleep(2)
-            print(".", end="", flush=True)
-            if _port_open(OLLAMA_PORT):
-                ready = True
-                break
-        print()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("  [2/3]  Ollama   ....  starting ..."),
+            TimeElapsedColumn(),
+            transient=True,
+        ) as progress:
+            progress.add_task("", total=None)
+            for _ in range(30):           # 30 × 2 s = up to 60 seconds
+                time.sleep(2)
+                if _port_open(OLLAMA_PORT):
+                    ready = True
+                    break
 
         if ready:
             _step(2, "Ollama", "ready")
