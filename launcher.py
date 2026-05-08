@@ -314,14 +314,25 @@ def main():
     if plamma_exe.exists():
         subprocess.run([str(plamma_exe)])
     else:
-        # Fall back: run from source with the current Python interpreter
+        # Fall back: run plamma.py from source.
+        # When frozen (Launcher.exe), sys.executable IS the exe — we need the real Python.
         plamma_script = BASE / "plamma.py"
         if not plamma_script.exists():
             print("  ERROR: Cannot find plamma.py or a compiled Plamma executable.")
             print(f"  Expected: {plamma_exe}  or  {plamma_script}")
             input("  Press Enter to exit.")
             sys.exit(1)
-        subprocess.run([sys.executable, str(plamma_script)])
+
+        if getattr(sys, "frozen", False):
+            python = shutil.which("python") or shutil.which("python3")
+            if not python:
+                print("  ERROR: Python not found in PATH. Add Python to PATH or build a Plamma.exe.")
+                input("  Press Enter to exit.")
+                sys.exit(1)
+        else:
+            python = sys.executable
+
+        subprocess.run([python, str(plamma_script)])
 
     print()
     print("  Session ended.")
