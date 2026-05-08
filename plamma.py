@@ -2,6 +2,7 @@
 import sys
 import os
 import re
+import io
 import base64
 import subprocess
 import tempfile
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 
 # Force UTF-8 so spinner frames and box-drawing characters render correctly
-if hasattr(sys.stdout, "reconfigure"):
+if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8")
 
 

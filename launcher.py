@@ -16,7 +16,8 @@ from pathlib import Path
 from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn
 
 # ── UTF-8 output ──────────────────────────────────────────────────────────────
-if hasattr(sys.stdout, "reconfigure"):
+import io
+if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
