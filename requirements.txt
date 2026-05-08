@@ -4,3 +4,4 @@ rich==13.9.4
 stem==1.8.2
 tzdata==2024.2
 cryptography==42.0.8
+pyperclip==1.9.0

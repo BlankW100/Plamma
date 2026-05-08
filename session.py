@@ -40,10 +40,24 @@ _NOUNS = [
 ]
 
 
+def _hash_codename(name: str) -> str:
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+
+
 def _load_registry() -> dict:
     if REGISTRY_PATH.exists():
         try:
-            return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            reg = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            # Migrate old format: {codename: session_id_str} → hashed-key format
+            if reg and isinstance(next(iter(reg.values())), str):
+                new_reg: dict = {}
+                for name, sid in reg.items():
+                    new_reg[_hash_codename(name)] = {
+                        "id": sid, "name": name, "saved_at": "unknown"
+                    }
+                _save_registry(new_reg)
+                return new_reg
+            return reg
         except Exception:
             return {}
     return {}
@@ -54,14 +68,13 @@ def _save_registry(reg: dict):
     REGISTRY_PATH.write_text(json.dumps(reg, indent=2), encoding="utf-8")
 
 
-def _unique_codename(existing: set) -> str:
+def _unique_codename(reg: dict) -> str:
+    existing = {entry["name"] for entry in reg.values()}
     for _ in range(200):
         name = f"{random.choice(_ADJECTIVES)}-{random.choice(_NOUNS)}"
         if name not in existing:
             return name
-    # fallback: append a short hex suffix
-    name = f"{random.choice(_ADJECTIVES)}-{random.choice(_NOUNS)}-{random.randint(10,99)}"
-    return name
+    return f"{random.choice(_ADJECTIVES)}-{random.choice(_NOUNS)}-{random.randint(10, 99)}"
 
 
 def _is_token(arg: str) -> bool:
@@ -111,12 +124,10 @@ class Session:
 
     def save_encrypted(self) -> tuple[str, str]:
         """
-        Encrypt and save the session.
-        Returns (token, codename).
-
-        The token is the only decryption key — it is never stored anywhere.
-        The codename is a human-readable alias stored in the registry.
-        The session file is named sha256(token)[:24] — reveals nothing without the token.
+        Encrypt and save the session. Returns (token, codename).
+        Token = Fernet key — never stored anywhere.
+        Registry stores sha256(codename)[:24] as the key, hiding codenames from
+        casual inspection; the readable name is stored only in the value.
         """
         from cryptography.fernet import Fernet
 
@@ -133,15 +144,18 @@ class Session:
         (SESSIONS_DIR / f"{session_id}.plamma").write_bytes(encrypted)
 
         reg = _load_registry()
-        codename = _unique_codename(set(reg.keys()))
-        reg[codename] = session_id
+        codename = _unique_codename(reg)
+        reg[_hash_codename(codename)] = {
+            "id":       session_id,
+            "name":     codename,
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
         _save_registry(reg)
 
         return key.decode(), codename
 
     @classmethod
     def load_by_token(cls, token: str) -> "Session":
-        """Load directly by Fernet token."""
         from cryptography.fernet import Fernet
 
         key = token.strip().encode()
@@ -159,25 +173,18 @@ class Session:
 
     @classmethod
     def load_by_codename(cls, codename: str, token: str) -> "Session":
-        """
-        Load by codename + token.
-        Verifies the token matches the session registered under that codename
-        before attempting decryption.
-        """
         from cryptography.fernet import Fernet
 
         reg = _load_registry()
-        if codename not in reg:
+        entry = reg.get(_hash_codename(codename))
+        if not entry:
             raise KeyError(f"No session with codename '{codename}'.")
 
-        expected_id = reg[codename]
         key = token.strip().encode()
-        actual_id = hashlib.sha256(key).hexdigest()[:24]
-
-        if actual_id != expected_id:
+        if hashlib.sha256(key).hexdigest()[:24] != entry["id"]:
             raise ValueError("Token does not match this codename.")
 
-        path = SESSIONS_DIR / f"{expected_id}.plamma"
+        path = SESSIONS_DIR / f"{entry['id']}.plamma"
         if not path.exists():
             raise FileNotFoundError("Session file is missing.")
 
@@ -189,26 +196,31 @@ class Session:
 
     @classmethod
     def delete_session(cls, codename: str) -> bool:
-        """Delete the session file and remove the codename from the registry."""
         reg = _load_registry()
-        if codename not in reg:
+        entry = reg.pop(_hash_codename(codename), None)
+        if not entry:
             return False
-
-        session_id = reg.pop(codename)
-        path = SESSIONS_DIR / f"{session_id}.plamma"
+        path = SESSIONS_DIR / f"{entry['id']}.plamma"
         if path.exists():
             path.unlink()
-
         _save_registry(reg)
         return True
 
     @classmethod
+    def list_sessions(cls) -> list[tuple[str, str]]:
+        """Return [(codename, saved_at)] sorted by name. Read-only — no tokens exposed."""
+        reg = _load_registry()
+        return sorted(
+            [(e["name"], e.get("saved_at", "unknown")) for e in reg.values()],
+            key=lambda x: x[0],
+        )
+
+    @classmethod
     def list_codenames(cls) -> list[str]:
-        return sorted(_load_registry().keys())
+        return [name for name, _ in cls.list_sessions()]
 
     @classmethod
     def nuke_sessions(cls):
-        """Delete all session files and the registry."""
         import shutil
         if SESSIONS_DIR.exists():
             shutil.rmtree(SESSIONS_DIR)

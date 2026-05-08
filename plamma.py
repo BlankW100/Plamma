@@ -75,7 +75,8 @@ HELP_TEXT = """\
   [yellow]/img[/yellow]                         Open file picker — choose an image, then ask a question
   [yellow]/showthink[/yellow]                   Toggle: show or hide the model's thinking process
   [yellow]/toriso[/yellow]                      Toggle: rotate Tor circuit before every search
-  [yellow]/session -s[/yellow]                  Encrypt & save session — prints codename + one-time token
+  [yellow]/session -s[/yellow]                  Encrypt & save session — copies token to clipboard
+  [yellow]/session -l[/yellow]                  List saved session codenames (read-only)
   [yellow]/session -c \\[token][/yellow]          Restore session directly by token
   [yellow]/session -c \\[codename][/yellow]       Restore session by codename (prompts for token)
   [yellow]/session -d \\[codename][/yellow]       Permanently delete a saved session
@@ -108,19 +109,24 @@ DETAILED_HELP: dict[str, str] = {
     Store both safely — the token is [bold red]never saved anywhere[/bold red] and cannot be recovered.
     The vault file is named after a hash of the token, not a passphrase — reveals nothing without the token.
 
+  [yellow]/session -l[/yellow]
+    Lists all saved session codenames with their save date.
+    Read-only — no tokens are shown or required. Safe to run anywhere.
+
   [yellow]/session -c \\[token][/yellow]
     Restores a session directly using the 44-char token you saved.
 
   [yellow]/session -c \\[codename][/yellow]
     Looks up the vault by codename, then prompts for the token inline.
     Useful when you remember the codename but want to avoid pasting the token visibly.
-    The token is verified against the stored hash before any decryption attempt.
 
   [yellow]/session -d \\[codename][/yellow]
     Permanently deletes the vault file and removes the codename from the registry.
     Irreversible — the encrypted data is gone.
 
-[dim]No plaintext is ever written to disk. Lose the token = lose the session, permanently.[/dim]""",
+[dim]Token copied to clipboard on save. Clear the terminal after copying.[/dim]
+[dim]Codename registry keys are hashed — no readable names stored in the raw file.[/dim]
+[dim]Lose the token = lose the session, permanently.[/dim]""",
 
     "nuke": """\
 [bold red]/nuke[/bold red] — Full self-destruct
@@ -640,7 +646,7 @@ def run_search_and_answer(user_input: str, mode: str, session: Session):
         console.print(f"[green]● Live data[/green]  [dim]{len(useful)} result(s)[/dim]")
         messages.append({
             "role": "system",
-            "content": format_for_llm(useful) + "\n\nAnswer the question using the results above. Cite sources inline as [1], [2], etc. List the URLs at the end.",
+            "content": "=== CONTEXT START ===\n" + format_for_llm(useful) + "\n=== CONTEXT END ===\n\nUse the information in the CONTEXT section above to answer accurately. Cite sources inline as [1], [2], etc. and list URLs at the end.",
         })
     else:
         console.print("[yellow]⚠ Offline — search returned no results[/yellow]")
@@ -798,17 +804,16 @@ def run_normal_message(user_input: str, session: Session):
     messages += session.get_context()
 
     if live_data and not do_search:
-        # Time resolved locally — no search was done
         console.print("[green]● Live data[/green]  [dim]resolved locally[/dim]")
         messages.append({
             "role": "system",
-            "content": live_data + "\n\nAnswer the question using the fact above. Be direct and concise.",
+            "content": "=== CONTEXT START ===\n" + live_data + "\n=== CONTEXT END ===\n\nUse the information in the CONTEXT section above to answer accurately. Be direct and concise.",
         })
     elif do_search and live_data:
         console.print("[green]● Live data[/green]")
         messages.append({
             "role": "system",
-            "content": live_data + "\n\nUse the data above to answer accurately. Cite sources inline as [1], [2], etc. and list URLs at the end.",
+            "content": "=== CONTEXT START ===\n" + live_data + "\n=== CONTEXT END ===\n\nUse the information in the CONTEXT section above to answer accurately. Cite sources inline as [1], [2], etc. and list URLs at the end.",
         })
     elif do_search and not live_data:
         console.print("[yellow]⚠ Offline — could not retrieve live data[/yellow]")
@@ -1095,7 +1100,7 @@ def main():
                     console.print(f"[magenta]● I2P[/magenta]  [dim]{len(useful)} result(s)[/dim]")
                     messages.append({
                         "role": "system",
-                        "content": format_for_llm(useful) + "\n\nAnswer the question using the I2P results above. Cite sources inline as [1], [2], etc.",
+                        "content": "=== CONTEXT START ===\n" + format_for_llm(useful) + "\n=== CONTEXT END ===\n\nUse the information in the CONTEXT section above to answer accurately. Cite sources inline as [1], [2], etc. and list URLs at the end.",
                     })
                 else:
                     console.print("[yellow]⚠ No I2P results — is I2P running?[/yellow]")
@@ -1125,11 +1130,42 @@ def main():
                 else:
                     try:
                         token, codename = session.save_encrypted()
+
+                        # Try to copy token to clipboard silently
+                        _copied = False
+                        try:
+                            import pyperclip
+                            pyperclip.copy(token)
+                            _copied = True
+                        except Exception:
+                            pass
+
+                        # Save cursor position — everything from here will be erased after Enter
+                        sys.stdout.write("\033[s")
+                        sys.stdout.flush()
+
                         console.print("\n[bold green]Session encrypted and saved.[/bold green]")
                         console.print(f"  Codename : [bold cyan]{codename}[/bold cyan]")
                         console.print(f"  Token    : [bold yellow]{token}[/bold yellow]")
-                        console.print("\n[dim]Store both safely. The token cannot be recovered — lose it and the session is gone forever.[/dim]")
-                        console.print("[dim]Restore with [yellow]/session -c <token>[/yellow] or [yellow]/session -c <codename>[/yellow] (will prompt for token).[/dim]")
+                        if _copied:
+                            console.print("\n[green]  ✓ Token copied to clipboard.[/green]")
+                        else:
+                            console.print("\n[yellow]  ⚠ Copy this token now — it will not be shown again.[/yellow]")
+                        console.print("[dim]  If you lose this token, the session is gone permanently.[/dim]")
+                        console.print("[dim]  Press Enter to clear the token from the screen...[/dim]", end="")
+                        sys.stdout.flush()
+                        try:
+                            input()
+                        except (KeyboardInterrupt, EOFError):
+                            console.print()
+
+                        # Restore saved cursor position and clear everything from there
+                        sys.stdout.write("\033[u\033[J")
+                        sys.stdout.flush()
+                        console.print(f"\n  Codename : [bold cyan]{codename}[/bold cyan]")
+                        console.print(f"  Token    : [dim]{'▪' * 20}  (cleared)[/dim]")
+                        console.print(f"[dim]  Restore: [yellow]/session -c {codename}[/yellow] — prompts for token.[/dim]")
+                        console.print(f"[dim]  Restore: [yellow]/session -c <token>[/yellow]  — if you still have it.[/dim]")
                     except Exception as e:
                         console.print(f"[red]Failed to save session: {e}[/red]")
 
@@ -1176,8 +1212,23 @@ def main():
                     else:
                         console.print(f"[red]No session with codename '{codename}'.[/red]")
 
+            elif sub == "-l":
+                sessions = Session.list_sessions()
+                if not sessions:
+                    console.print("[yellow]No saved sessions.[/yellow]")
+                else:
+                    tbl = Table(show_header=True, header_style="bold cyan",
+                                show_edge=False, padding=(0, 1))
+                    tbl.add_column("Codename", no_wrap=True)
+                    tbl.add_column("Saved", style="dim", no_wrap=True)
+                    for name, saved_at in sessions:
+                        tbl.add_row(name, saved_at)
+                    console.print()
+                    console.print(tbl)
+                    console.print("[dim]Read-only list. Restore with [yellow]/session -c <codename>[/yellow].[/dim]")
+
             else:
-                console.print("[yellow]Usage: /session -s | -c <token|codename> | -d <codename>[/yellow]")
+                console.print("[yellow]Usage: /session -s | -c <token|codename> | -d <codename> | -l[/yellow]")
 
         elif low in ("/nuke", "/nuke -f"):
             force = low == "/nuke -f"
