@@ -11,3 +11,5 @@ plamma.env
 *.log
 plamma_session_*.md
 .plamma/
+Launcher.exe
+Launcher
