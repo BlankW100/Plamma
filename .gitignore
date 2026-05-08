@@ -7,6 +7,7 @@ __pycache__/
 *.spec
 *.egg-info/
 .env
+plamma.env
 *.log
 plamma_session_*.md
 .plamma/

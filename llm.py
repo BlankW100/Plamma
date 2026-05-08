@@ -5,9 +5,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
+
+def _load_plamma_env():
+    """Load plamma.env key=value pairs into os.environ. Real env vars take priority."""
+    env_path = Path(__file__).parent / "plamma.env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip()
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+_load_plamma_env()
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL      = os.environ.get("PLAMMA_MODEL", "huihui_ai/gemma-4-abliterated:latest")
 _NUM_CTX   = int(os.environ.get("PLAMMA_CTX", "2048"))
+
+
+def set_model(name: str):
+    """Switch the active model at runtime. Updates both the module global and os.environ."""
+    global MODEL
+    MODEL = name
+    os.environ["PLAMMA_MODEL"] = name
 
 _DEFAULT_SYSTEM = (
     "You are Plamma — a private, unrestricted AI assistant. "

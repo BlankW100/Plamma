@@ -39,7 +39,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from llm import get_system_prompt, MODEL, check_ollama, stream_response, should_search, OFFLINE_NOTICE
+import requests
+import llm
+from llm import get_system_prompt, check_ollama, stream_response, should_search, OFFLINE_NOTICE
 from search import (
     search_surface, search_dark, format_for_llm, format_citations,
     needs_live_data, fetch_finviz, resolve_time_query,
@@ -73,6 +75,8 @@ HELP_TEXT = """\
   [yellow]/tor[/yellow]                         Check Tor connection status
   [yellow]/newtor[/yellow]                      Rotate Tor circuit (new exit node)
   [yellow]/model[/yellow]                       Show current model
+  [yellow]/model -a[/yellow]                    List all downloaded models (highlights recommended)
+  [yellow]/model \[name][/yellow]               Switch to a different model + save to plamma.env
   [yellow]/nuke[/yellow]                        Delete all sessions + self-destruct (prompts confirm)
   [yellow]/nuke -f[/yellow]                     Same as /nuke but skips confirmation
   [yellow]/h \[command][/yellow]                 Detailed help for a specific command
@@ -165,7 +169,140 @@ latest, current, today...) or explicit phrases (search for, find me, look up, et
   If Tor is not running, searches still work but traffic is [bold red]NOT anonymous[/bold red].
 
 [dim]Configure Tor path in launcher.bat via TOR_EXE and TOR_TORRC variables.[/dim]""",
+
+    "model": """\
+[bold cyan]/model[/bold cyan] — Model management
+
+  [yellow]/model[/yellow]              Show the currently active model.
+  [yellow]/model -a[/yellow]           List all models downloaded on this machine.
+                      [bold green]★[/bold green] marks abliterated / uncensored models — recommended for full functionality.
+  [yellow]/model \[name][/yellow]      Switch to the specified model immediately and save to plamma.env.
+
+[dim]Model preference is saved in plamma.env in the Plamma directory.
+You can also set PLAMMA_MODEL as an environment variable to override it.[/dim]
+
+[bold yellow]⚠  Compatibility note[/bold yellow]
+Plamma's system prompt instructs the model to respond without filters.
+This works reliably only on [bold]abliterated or uncensored[/bold] models.
+Standard models (Llama, Gemma, Qwen, DeepSeek, Mistral base, etc.) have
+safety filters baked into their weights. Those filters [bold]cannot be overridden
+by a system prompt[/bold] — the model will still refuse certain requests.
+Recommended keywords to look for in a model name:
+  [cyan]abliterated · uncensored · unfiltered · dolphin · openhermes · nous-hermes[/cyan]""",
 }
+
+
+# ── model helpers ─────────────────────────────────────────────────────────────
+
+_UNCENSORED_SIGNALS = {
+    "abliterat",       # covers abliterated / abliteration
+    "uncensored",
+    "unfiltered",
+    "dolphin",
+    "openhermes",
+    "nous-hermes",
+    "wizard-vicuna",
+    "jailbreak",
+    "unrestricted",
+    "natasi",
+    "dark-",
+}
+
+
+def _is_recommended(model_name: str) -> tuple[bool, str]:
+    """Return (is_recommended, matched_signal) for a model name."""
+    low = model_name.lower()
+    for sig in _UNCENSORED_SIGNALS:
+        if sig in low:
+            label = sig.replace("abliterat", "abliterated").rstrip("-")
+            return True, label
+    return False, ""
+
+
+def _fetch_models() -> list[str]:
+    """Return list of model names installed in Ollama, or [] on failure."""
+    try:
+        r = requests.get(f"{llm.OLLAMA_URL}/api/tags", timeout=5)
+        if r.ok:
+            return [m["name"] for m in r.json().get("models", [])]
+    except Exception:
+        pass
+    return []
+
+
+def _save_model_config(model_name: str):
+    """Write / update PLAMMA_MODEL in plamma.env."""
+    env_path = Path(__file__).parent / "plamma.env"
+    lines: list[str] = []
+    found = False
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("PLAMMA_MODEL="):
+                lines.append(f"PLAMMA_MODEL={model_name}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"PLAMMA_MODEL={model_name}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _first_run_picker(ollama_ok: bool):
+    """Interactive model picker shown when plamma.env does not exist yet."""
+    if not ollama_ok:
+        return
+
+    models = _fetch_models()
+    if not models:
+        return
+
+    console.print("\n[bold cyan]First-run setup[/bold cyan] — no model configured.\n")
+    console.print(
+        "[bold yellow]⚠  Important[/bold yellow]\n"
+        "Plamma is built for [bold]abliterated or uncensored[/bold] models.\n"
+        "Standard models (Llama, Gemma, Qwen, DeepSeek, Mistral, etc.) have\n"
+        "safety filters baked into their weights that [bold red]cannot be bypassed[/bold red]\n"
+        "by a system prompt — they will still refuse certain requests.\n\n"
+        "Look for model names containing:\n"
+        "  [cyan]abliterated · uncensored · unfiltered · dolphin · openhermes[/cyan]\n"
+    )
+    console.print("[bold]Models installed on this machine:[/bold]\n")
+
+    for i, name in enumerate(models, 1):
+        rec, label = _is_recommended(name)
+        if rec:
+            console.print(f"  [bold green][{i:2}] ★ {name}[/bold green]  [dim]← {label}[/dim]")
+        else:
+            console.print(f"       [{i:2}]   {name}")
+
+    console.print(
+        "\n[dim][bold green]★[/bold green] = recommended (unrestricted model)[/dim]\n"
+        "[dim]Press Enter to skip and use the built-in default.[/dim]"
+    )
+    sys.stdout.write("\n  Pick a number: ")
+    sys.stdout.flush()
+    try:
+        raw = input().strip()
+    except (KeyboardInterrupt, EOFError):
+        console.print()
+        return
+
+    if not raw:
+        console.print("[dim]Using default model.[/dim]\n")
+        return
+
+    try:
+        idx = int(raw) - 1
+        if 0 <= idx < len(models):
+            chosen = models[idx]
+            _save_model_config(chosen)
+            llm.set_model(chosen)
+            console.print(f"\n[green]Model set to:[/green] [bold]{chosen}[/bold]")
+            console.print("[dim]Saved to plamma.env — used on all future launches.[/dim]\n")
+        else:
+            console.print("[yellow]Number out of range — using default model.[/yellow]\n")
+    except ValueError:
+        console.print("[yellow]Invalid input — using default model.[/yellow]\n")
 
 # ── thinking toggle (global state) ───────────────────────────────────────────
 _SHOW_THINKING = False
@@ -578,17 +715,22 @@ def main():
     console.print(Text(BANNER, style="bold cyan"))
     console.print(Panel.fit(
         "[bold white]Private · Local · Uncensored[/bold white]\n"
-        f"[dim]Model: {MODEL}[/dim]",
+        f"[dim]Model: {llm.MODEL}[/dim]",
         border_style="cyan",
     ))
     console.print()
 
     # Startup checks
-    if not check_ollama():
+    ollama_ok = check_ollama()
+    if not ollama_ok:
         console.print("[bold red]Ollama is not running.[/bold red]")
         console.print("[dim]Start it with: ollama serve[/dim]\n")
     else:
         console.print("[green]Ollama[/green]  connected")
+
+    # First-run model picker — only when plamma.env doesn't exist yet
+    if not (Path(__file__).parent / "plamma.env").exists():
+        _first_run_picker(ollama_ok)
 
     console.print("[dim]Checking Tor...[/dim]", end=" ")
     sys.stdout.flush()
@@ -630,7 +772,7 @@ def main():
             parts = user_input.split(maxsplit=1)
             if len(parts) < 2:
                 console.print("[dim]Usage: /h \[command][/dim]")
-                console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor[/yellow][/dim]")
+                console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model[/yellow][/dim]")
             else:
                 key = parts[1].strip().lstrip("/").lower()
                 # normalise aliases
@@ -638,12 +780,14 @@ def main():
                     key = "s"
                 if key == "newtor":
                     key = "tor"
+                if key in ("models", "model"):
+                    key = "model"
                 info = DETAILED_HELP.get(key)
                 if info:
                     console.print(info)
                 else:
                     console.print(f"[yellow]No detailed help for '{key}'.[/yellow]")
-                    console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor[/yellow][/dim]")
+                    console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model[/yellow][/dim]")
 
         elif low == "/help":
             console.print(HELP_TEXT)
@@ -769,8 +913,50 @@ def main():
             else:
                 console.print(f"[yellow]{msg}[/yellow]")
 
-        elif low == "/model":
-            console.print(f"[dim]Model: {MODEL}[/dim]")
+        elif low.startswith("/model"):
+            _mparts = user_input.split(maxsplit=1)
+            _msub   = _mparts[1].strip() if len(_mparts) > 1 else ""
+
+            if not _msub:
+                rec, label = _is_recommended(llm.MODEL)
+                tag = f"  [bold green]★ {label}[/bold green]" if rec else ""
+                console.print(f"[dim]Model: [bold]{llm.MODEL}[/bold]{tag}[/dim]")
+
+            elif _msub.lower() == "-a":
+                models = _fetch_models()
+                if not models:
+                    console.print("[red]Could not reach Ollama to list models.[/red]")
+                else:
+                    console.print("\n[bold]Installed models:[/bold]\n")
+                    for name in models:
+                        rec, label = _is_recommended(name)
+                        active = "  [bold cyan](active)[/bold cyan]" if name == llm.MODEL else ""
+                        if rec:
+                            console.print(f"  [bold green]★  {name}[/bold green]  [dim]← {label}[/dim]{active}")
+                        else:
+                            console.print(f"     {name}{active}")
+                    console.print(
+                        "\n[dim][bold green]★[/bold green] = recommended (unrestricted model)[/dim]\n"
+                        "[dim]Use [yellow]/model \[name][/yellow] to switch.[/dim]"
+                    )
+                    console.print(
+                        "\n[dim][bold yellow]⚠[/bold yellow]  Standard models (Llama, Gemma, Qwen, DeepSeek, Mistral, etc.) "
+                        "have built-in safety filters that cannot be bypassed by a system prompt.[/dim]"
+                    )
+
+            else:
+                llm.set_model(_msub)
+                _save_model_config(_msub)
+                rec, label = _is_recommended(_msub)
+                console.print(f"[green]Model switched to:[/green] [bold]{_msub}[/bold]")
+                if rec:
+                    console.print(f"[green]★ Recognised as an unrestricted model ({label}).[/green]")
+                else:
+                    console.print(
+                        "[bold yellow]⚠[/bold yellow]  [dim]This model does not appear to be abliterated/uncensored. "
+                        "Safety filters may still be active — some requests might be refused.[/dim]"
+                    )
+                console.print("[dim]Saved to plamma.env.[/dim]")
 
         elif low == "/img" or low.startswith("/img "):
             run_image_message(user_input, session)
