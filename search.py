@@ -168,16 +168,37 @@ _NOT_TICKERS = {
 }
 
 LIVE_KEYWORDS = {
+    # time-sensitive
     "today","tonight","yesterday","current","currently","latest","recent",
     "recently","now","right now","live","real-time","realtime",
+    "this week","this month","this year","at the moment","just happened",
+    "lately","these days","still","2024","2025","2026",
+    # finance
     "price","prices","stock","stocks","share","shares","ticker","market",
     "trading","crypto","bitcoin","ethereum","btc","eth","nft",
-    "news","breaking","weather","temperature","forecast",
-    "rate","rates","interest rate","exchange rate",
-    "2024","2025","2026","this week","this month","this year",
-    "score","result","standings","election","earnings","ipo",
-    "lately","these days","at the moment","just happened","still",
+    "rate","rates","interest rate","exchange rate","earnings","ipo",
+    # news / events
+    "news","breaking","headline","headlines","announcement","update",
+    "weather","temperature","forecast","score","result","standings","election",
+    # inference helpers
     "who won","did they","have they","is he","is she","are they",
+    # explicit online intent
+    "internet","online","website","web search",
+}
+
+# Phrases that explicitly ask for a search, regardless of other keywords
+_SEARCH_PHRASES = {
+    "search for","search up","search about",
+    "find me","find information","find out","find online",
+    "look up","look it up","look for",
+    "browse for","browse the web",
+    "search online","search the web","search the internet",
+    "check online","check the web","check the internet","check for",
+    "google it","google for",
+    "can you find","can you search","can you look up","can you check",
+    "what does the internet say","what does google say",
+    "get me information","get information on","get info on",
+    "research","i need to know about","tell me the latest",
 }
 
 # .onion search engines — reachable only through Tor
@@ -347,8 +368,9 @@ def needs_live_data(message: str) -> tuple[bool, list[str]]:
     """Return (should_auto_search, detected_tickers) for a plain user message."""
     low = message.lower()
     has_keyword = any(kw in low for kw in LIVE_KEYWORDS)
+    has_phrase  = any(ph in low for ph in _SEARCH_PHRASES)
     tickers = detect_tickers(message)
-    return (has_keyword or bool(tickers)), tickers
+    return (has_keyword or has_phrase or bool(tickers)), tickers
 
 
 def fetch_finviz(tickers: list[str]) -> str:

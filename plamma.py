@@ -62,27 +62,110 @@ HELP_TEXT = """\
   [yellow]/s <query>[/yellow]                   Search surface web via Tor, then answer
   [yellow]/d <query>[/yellow]                   Search dark web (.onion) via Tor, then answer
   [yellow]/sd <query>[/yellow]                  Search both, then answer
-  [yellow]/img[/yellow]                         Open file picker to choose an image, then ask your question
+  [yellow]/img[/yellow]                         Open file picker — choose an image, then ask a question
   [yellow]/showthink[/yellow]                   Toggle: show or hide the model's thinking process
   [yellow]/session -s[/yellow]                  Encrypt & save session — prints codename + one-time token
-  [yellow]/session -c <token>[/yellow]          Restore session directly by token
-  [yellow]/session -c <codename>[/yellow]       Restore session by codename (will prompt for token)
-  [yellow]/session -d <codename>[/yellow]       Delete a saved session permanently
-  [yellow]/log [file][/yellow]                  Save session to plaintext markdown
+  [yellow]/session -c \[token][/yellow]          Restore session directly by token
+  [yellow]/session -c \[codename][/yellow]       Restore session by codename (prompts for token)
+  [yellow]/session -d \[codename][/yellow]       Permanently delete a saved session
+  [yellow]/log \[file][/yellow]                  Export session to plaintext markdown
   [yellow]/clear[/yellow]                       Wipe in-memory chat history
   [yellow]/tor[/yellow]                         Check Tor connection status
   [yellow]/newtor[/yellow]                      Rotate Tor circuit (new exit node)
   [yellow]/model[/yellow]                       Show current model
-  [yellow]/nuke[/yellow]                        Delete all sessions + self-destruct (prompts for confirm)
+  [yellow]/nuke[/yellow]                        Delete all sessions + self-destruct (prompts confirm)
   [yellow]/nuke -f[/yellow]                     Same as /nuke but skips confirmation
+  [yellow]/h \[command][/yellow]                 Detailed help for a specific command
   [yellow]/help[/yellow]                        Show this help
   [yellow]/exit[/yellow]                        Exit Plamma
 
-[dim]Normal messages auto-search when they contain keywords like price/stock/today/news.[/dim]
-[dim]Use /s /d /sd to force a specific search type.[/dim]
-[dim]You can also type /img C:\\path\\to\\file.jpg [question] to skip the dialog.[/dim]
-[dim]Set PLAMMA_MODEL, OLLAMA_URL, PLAMMA_CTX, TOR_SOCKS_PORT env vars to override defaults.[/dim]
+[dim]Auto-search triggers on keywords like: price, news, latest, current, today...[/dim]
+[dim]Also triggers on phrases like: "search for", "find me", "look up", "check online".[/dim]
+[dim]Use /s /d /sd to force a specific search type regardless.[/dim]
+[dim]Type /h session   /h nuke   /h log   /h s   /h img   /h tor   for detailed help.[/dim]
 """
+
+DETAILED_HELP: dict[str, str] = {
+    "session": """\
+[bold cyan]/session[/bold cyan] — Encrypted session vault
+
+  [yellow]/session -s[/yellow]
+    Encrypts the current conversation and saves it to [dim]~/.plamma/sessions/[/dim]
+    Prints a [bold]codename[/bold] (e.g. [cyan]silent-vortex[/cyan]) and a [bold]token[/bold] (44-char key).
+    Store both safely — the token is [bold red]never saved anywhere[/bold red] and cannot be recovered.
+    The vault file is named after a hash of the token, not a passphrase — reveals nothing without the token.
+
+  [yellow]/session -c \[token][/yellow]
+    Restores a session directly using the 44-char token you saved.
+
+  [yellow]/session -c \[codename][/yellow]
+    Looks up the vault by codename, then prompts for the token inline.
+    Useful when you remember the codename but want to avoid pasting the token visibly.
+    The token is verified against the stored hash before any decryption attempt.
+
+  [yellow]/session -d \[codename][/yellow]
+    Permanently deletes the vault file and removes the codename from the registry.
+    Irreversible — the encrypted data is gone.
+
+[dim]No plaintext is ever written to disk. Lose the token = lose the session, permanently.[/dim]""",
+
+    "nuke": """\
+[bold red]/nuke[/bold red] — Full self-destruct
+
+  Wipes all saved session vaults, then deletes the entire Plamma directory.
+  Nothing is left on the machine after completion.
+
+  [yellow]/nuke[/yellow]      Prompts: type [bold]YES[/bold] (exact, uppercase) to confirm.
+  [yellow]/nuke -f[/yellow]   Force — skips confirmation, executes immediately.
+
+  A detached background process handles deletion after Plamma exits, so the
+  running executable can be removed too.
+
+[dim]Cannot be undone. Use /session -d \[codename] to remove individual vaults instead.[/dim]""",
+
+    "log": """\
+[bold cyan]/log[/bold cyan] — Export session to plaintext Markdown
+
+  [yellow]/log[/yellow]              Saves to [dim]plamma_session_YYYYMMDD_HHMMSS.md[/dim] in the current folder.
+  [yellow]/log myfile.md[/yellow]    Saves to the specified path.
+
+  Output is [bold]readable plaintext[/bold] — not encrypted.
+  Do not use this for sensitive research. Use [yellow]/session -s[/yellow] for encrypted saves.""",
+
+    "s": """\
+[bold cyan]/s  /d  /sd[/bold cyan] — Web search via Tor
+
+  [yellow]/s <query>[/yellow]    Surface web only — anonymous via Tor (DuckDuckGo HTML).
+  [yellow]/d <query>[/yellow]    Dark web .onion only — via Tor (Ahmia, Haystak).
+  [yellow]/sd <query>[/yellow]   Both surfaces simultaneously.
+
+  Results are injected into the model's context with inline citations \[1], \[2]...
+  Sources are listed at the end of the response.
+
+[dim]Auto-search triggers when your message contains live-data keywords (price, news,
+latest, current, today...) or explicit phrases (search for, find me, look up, etc.)[/dim]""",
+
+    "img": """\
+[bold cyan]/img[/bold cyan] — Image analysis
+
+  [yellow]/img[/yellow]                                    Opens a file picker dialog.
+  [yellow]/img C:\\\\path\\\\to\\\\file.jpg[/yellow]              Analyzes the image directly.
+  [yellow]/img C:\\\\path\\\\to\\\\file.jpg \[question][/yellow]  Custom question about the image.
+
+  Supported formats: JPG, PNG, GIF, BMP, WEBP.
+  The image is base64-encoded and sent to the model in-context.""",
+
+    "tor": """\
+[bold cyan]/tor  /newtor[/bold cyan] — Tor circuit management
+
+  [yellow]/tor[/yellow]       Checks whether Tor is active and routing traffic correctly.
+  [yellow]/newtor[/yellow]    Requests a new circuit (new exit node / new anonymous IP).
+
+  All search commands (/s /d /sd) route through Tor automatically.
+  If Tor is not running, searches still work but traffic is [bold red]NOT anonymous[/bold red].
+
+[dim]Configure Tor path in launcher.bat via TOR_EXE and TOR_TORRC variables.[/dim]""",
+}
 
 # ── thinking toggle (global state) ───────────────────────────────────────────
 _SHOW_THINKING = False
@@ -542,6 +625,25 @@ def main():
             console.print("[dim]Shutting down...[/dim]")
             _shutdown_services()
             break
+
+        elif low.startswith("/h ") or low == "/h":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2:
+                console.print("[dim]Usage: /h \[command][/dim]")
+                console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor[/yellow][/dim]")
+            else:
+                key = parts[1].strip().lstrip("/").lower()
+                # normalise aliases
+                if key in ("d", "sd", "search", "dark", "surface"):
+                    key = "s"
+                if key == "newtor":
+                    key = "tor"
+                info = DETAILED_HELP.get(key)
+                if info:
+                    console.print(info)
+                else:
+                    console.print(f"[yellow]No detailed help for '{key}'.[/yellow]")
+                    console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor[/yellow][/dim]")
 
         elif low == "/help":
             console.print(HELP_TEXT)
