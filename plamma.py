@@ -47,7 +47,8 @@ import requests
 import llm
 from llm import get_system_prompt, check_ollama, stream_response, should_search, OFFLINE_NOTICE
 from search import (
-    search_surface, search_dark, format_for_llm, format_citations,
+    search_surface, search_dark, search_i2p, fetch_url_content,
+    format_for_llm, format_citations,
     needs_live_data, fetch_finviz, resolve_time_query,
 )
 from session import Session
@@ -68,8 +69,12 @@ HELP_TEXT = """\
   [yellow]/s <query>[/yellow]                   Search surface web via Tor, then answer
   [yellow]/d <query>[/yellow]                   Search dark web (.onion) via Tor, then answer
   [yellow]/sd <query>[/yellow]                  Search both, then answer
+  [yellow]/d2 <query>[/yellow]                  Search I2P network (.i2p eepsites)
+  [yellow]/fetch <url>[/yellow]                 Fetch a URL through Tor and analyse it
+  [yellow]/doc <path>[/yellow]                  Analyse a local document (txt md pdf csv...)
   [yellow]/img[/yellow]                         Open file picker — choose an image, then ask a question
   [yellow]/showthink[/yellow]                   Toggle: show or hide the model's thinking process
+  [yellow]/toriso[/yellow]                      Toggle: rotate Tor circuit before every search
   [yellow]/session -s[/yellow]                  Encrypt & save session — prints codename + one-time token
   [yellow]/session -c \\[token][/yellow]          Restore session directly by token
   [yellow]/session -c \\[codename][/yellow]       Restore session by codename (prompts for token)
@@ -89,8 +94,8 @@ HELP_TEXT = """\
 
 [dim]Auto-search triggers on keywords like: price, news, latest, current, today...[/dim]
 [dim]Also triggers on phrases like: "search for", "find me", "look up", "check online".[/dim]
-[dim]Use /s /d /sd to force a specific search type regardless.[/dim]
-[dim]Type /h session   /h nuke   /h log   /h s   /h img   /h tor   for detailed help.[/dim]
+[dim]Use /s /d /sd /d2 to force a specific search type regardless.[/dim]
+[dim]Type /h fetch   /h doc   /h d2   /h toriso   /h session   /h s   /h img   for detailed help.[/dim]
 """
 
 DETAILED_HELP: dict[str, str] = {
@@ -193,6 +198,65 @@ safety filters baked into their weights. Those filters [bold]cannot be overridde
 by a system prompt[/bold] — the model will still refuse certain requests.
 Recommended keywords to look for in a model name:
   [cyan]abliterated · uncensored · unfiltered · dolphin · openhermes · nous-hermes[/cyan]""",
+
+    "fetch": """\
+[bold cyan]/fetch[/bold cyan] — Fetch a URL through Tor and analyse it
+
+  [yellow]/fetch <url>[/yellow]
+    Downloads the page through Tor (anonymous), strips scripts/ads/nav,
+    and feeds the cleaned text to the model for analysis or Q&A.
+    Supports http:// and https://. Onion URLs (.onion) also work via Tor.
+
+  After fetching, you can ask follow-up questions — the page content stays
+  in the session context.
+
+[dim]Content is truncated at ~8 000 characters if the page is very large.[/dim]
+[dim]No browser fingerprint — request goes out as a plain Tor circuit.[/dim]""",
+
+    "doc": """\
+[bold cyan]/doc[/bold cyan] — Analyse a local document
+
+  [yellow]/doc <path>[/yellow]
+    Reads the file and feeds its content to the model.
+    Supported formats: [cyan]txt  md  py  csv  json  log  html  xml  yaml  toml[/cyan]
+    PDF support requires:  [yellow]pip install pypdf[/yellow]
+
+  The document content is added to context — follow-up questions work.
+  Large files are truncated to fit the model's context window.
+
+[dim]The file never leaves your machine — it is only passed to the local Ollama model.[/dim]""",
+
+    "d2": """\
+[bold cyan]/d2[/bold cyan] — Search I2P network
+
+  [yellow]/d2 <query>[/yellow]
+    Searches .i2p eepsites via the local I2P HTTP proxy (default port 4444).
+    I2P is a separate anonymity network from Tor — different threat model,
+    different sites, slower but more resistant to traffic analysis.
+
+  Requires I2P to be installed and running:
+    Windows: [dim]https://geti2p.net/en/download[/dim]
+    The I2P router must be started before running this command.
+    Default proxy: [dim]http://127.0.0.1:4444[/dim]  (override: [yellow]I2P_HTTP_PORT[/yellow] in plamma.env)
+
+[dim]I2P has higher latency than Tor (5–30 s per query is normal).[/dim]
+[dim]Dark web (.onion) searches still use /d via Tor.[/dim]""",
+
+    "toriso": """\
+[bold cyan]/toriso[/bold cyan] — Circuit isolation mode
+
+  [yellow]/toriso[/yellow]    Toggle on/off. When ON, Plamma requests a new Tor circuit
+            (new exit node, new identity) before every search or /fetch call.
+            This prevents different queries from being linked to the same circuit.
+
+  [bold]When to use it:[/bold]
+    Sensitive research sessions where you don't want queries correlated.
+    Any session where timing analysis of your Tor traffic is a concern.
+
+  [bold]Cost:[/bold] adds 2–10 seconds before each search while Tor rebuilds circuits.
+
+[dim]Same as running /newtor before every search, but automatic.[/dim]
+[dim]Has no effect if Tor is not running.[/dim]""",
 }
 
 
@@ -308,8 +372,39 @@ def _first_run_picker(ollama_ok: bool):
     except ValueError:
         console.print("[yellow]Invalid input — using default model.[/yellow]\n")
 
-# ── thinking toggle (global state) ───────────────────────────────────────────
+# ── thinking / toriso toggles ────────────────────────────────────────────────
 _SHOW_THINKING = False
+_TORISO_MODE   = False
+
+
+def _read_document(path_str: str) -> tuple[str, str]:
+    """Read a document from disk. Returns (content, error_message)."""
+    path = Path(path_str.strip('"').strip("'"))
+    if not path.exists():
+        return "", f"File not found: {path}"
+
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(str(path))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            return text, ""
+        except ImportError:
+            return "", "PDF support requires pypdf. Run: pip install pypdf"
+        except Exception as e:
+            return "", f"PDF read error: {e}"
+
+    _TEXT_TYPES = {".txt",".md",".py",".csv",".json",".log",".html",".xml",
+                   ".yaml",".yml",".toml",".cfg",".ini",".rst",""}
+    if suffix in _TEXT_TYPES:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace"), ""
+        except Exception as e:
+            return "", f"Read error: {e}"
+
+    return "", f"Unsupported file type '{suffix}'. Supported: txt md py csv json log html xml yaml toml pdf"
 
 
 # ── spinner shown while waiting for the first token ──────────────────────────
@@ -497,6 +592,7 @@ def stream_and_collect(messages: list[dict]) -> str:
 # ── search helpers ────────────────────────────────────────────────────────────
 
 def run_search_and_answer(user_input: str, mode: str, session: Session):
+    global _TORISO_MODE
     # Strip the command prefix to get the actual query/message
     if mode == "surface":
         query = user_input[3:].strip()
@@ -508,6 +604,10 @@ def run_search_and_answer(user_input: str, mode: str, session: Session):
     if not query:
         console.print("[red]Please provide a query after the command.[/red]")
         return
+
+    if _TORISO_MODE:
+        with console.status("[dim]Rotating Tor circuit (toriso)...[/dim]"):
+            new_identity()
 
     results = []
 
@@ -655,6 +755,7 @@ def run_image_message(user_input: str, session: Session):
 
 
 def run_normal_message(user_input: str, session: Session):
+    global _TORISO_MODE
     # Resolve time/timezone queries locally — no web search needed
     time_fact = resolve_time_query(user_input)
 
@@ -672,6 +773,9 @@ def run_normal_message(user_input: str, session: Session):
     useful: list[dict] = []
 
     if do_search:
+        if _TORISO_MODE:
+            with console.status("[dim]Rotating Tor circuit (toriso)...[/dim]"):
+                new_identity()
         if tickers:
             with console.status(f"[cyan]Fetching live data for {', '.join(tickers)}...[/cyan]"):
                 stock_data = fetch_finviz(tickers)
@@ -805,6 +909,24 @@ def main():
     ))
     console.print()
 
+    # ── OLLAMA_URL remote host warning ───────────────────────────────────────
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(llm.OLLAMA_URL)
+    if _parsed.hostname not in ("127.0.0.1", "localhost", "::1", None):
+        console.print(
+            "\n[bold red]⚠  SECURITY WARNING[/bold red]\n"
+            f"  OLLAMA_URL is set to a remote host: [bold]{llm.OLLAMA_URL}[/bold]\n"
+            "  All conversation data will be sent to that server [bold red]unencrypted[/bold red].\n"
+            "  Set [yellow]OLLAMA_URL=http://localhost:11434[/yellow] in plamma.env to use a local model.\n"
+        )
+        sys.stdout.write("  Press Enter to continue anyway, or Ctrl+C to exit: ")
+        sys.stdout.flush()
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            sys.exit(0)
+        console.print()
+
     # Startup checks
     ollama_ok = check_ollama()
     if not ollama_ok:
@@ -857,7 +979,7 @@ def main():
             parts = user_input.split(maxsplit=1)
             if len(parts) < 2:
                 console.print("[dim]Usage: /h \\[command][/dim]")
-                console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model[/yellow][/dim]")
+                console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model  fetch  doc  d2  toriso[/yellow][/dim]")
             else:
                 key = parts[1].strip().lstrip("/").lower()
                 # normalise aliases
@@ -867,12 +989,14 @@ def main():
                     key = "tor"
                 if key in ("models", "model"):
                     key = "model"
+                if key == "i2p":
+                    key = "d2"
                 info = DETAILED_HELP.get(key)
                 if info:
                     console.print(info)
                 else:
                     console.print(f"[yellow]No detailed help for '{key}'.[/yellow]")
-                    console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model[/yellow][/dim]")
+                    console.print("[dim]Available: [yellow]session  nuke  log  s  img  tor  model  fetch  doc  d2  toriso[/yellow][/dim]")
 
         elif low == "/help":
             console.print(HELP_TEXT)
@@ -882,6 +1006,110 @@ def main():
             _SHOW_THINKING = not _SHOW_THINKING
             state = "[green]ON[/green] — thinking will be echoed" if _SHOW_THINKING else "[yellow]OFF[/yellow] — thinking is hidden"
             console.print(f"  Thinking display: {state}")
+
+        elif low == "/toriso":
+            global _TORISO_MODE
+            _TORISO_MODE = not _TORISO_MODE
+            state = "[green]ON[/green] — circuit rotated before every search" if _TORISO_MODE else "[yellow]OFF[/yellow]"
+            console.print(f"  Circuit isolation: {state}")
+
+        elif low.startswith("/fetch "):
+            url = user_input[7:].strip()
+            if not url.startswith(("http://", "https://")):
+                console.print("[red]Usage: /fetch <url>  (must start with http:// or https://)[/red]")
+            else:
+                with console.status(f"[cyan]Fetching {url} via Tor...[/cyan]"):
+                    result = fetch_url_content(url)
+                if "error" in result:
+                    console.print(f"[red]Fetch failed: {result['error']}[/red]")
+                else:
+                    title = result.get("title", url)
+                    content = result["content"]
+                    console.print(f"[dim]  Fetched: {title}  ({len(content)} chars)[/dim]")
+                    messages = [{"role": "system", "content": get_system_prompt()}]
+                    messages += session.get_context()
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            f"The user fetched the following page via Tor:\n"
+                            f"URL: {url}\nTitle: {title}\n\n"
+                            f"--- PAGE CONTENT START ---\n{content}\n--- PAGE CONTENT END ---\n\n"
+                            "Use this content to answer the user's question."
+                        ),
+                    })
+                    messages.append({"role": "user", "content": f"Analyse and summarise: {url}"})
+                    console.print("\n[bold green]Plamma:[/bold green]")
+                    response = stream_and_collect(messages)
+                    session.add("user", f"[Fetched: {url}]")
+                    session.add("assistant", response)
+
+        elif low.startswith("/doc "):
+            path_arg = user_input[5:].strip()
+            content, err = _read_document(path_arg)
+            if err:
+                console.print(f"[red]{err}[/red]")
+            else:
+                MAX_DOC = 12_000
+                truncated = len(content) > MAX_DOC
+                if truncated:
+                    content = content[:MAX_DOC] + f"\n\n[truncated — original: {len(content)} chars]"
+                console.print(f"[dim]  Document loaded: {Path(path_arg).name}  ({len(content)} chars{' — truncated' if truncated else ''})[/dim]")
+                messages = [{"role": "system", "content": get_system_prompt()}]
+                messages += session.get_context()
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"The user provided the following document ({Path(path_arg).name}):\n\n"
+                        f"--- DOCUMENT START ---\n{content}\n--- DOCUMENT END ---\n\n"
+                        "Use this document to answer the user's questions."
+                    ),
+                })
+                messages.append({"role": "user", "content": f"Analyse and summarise this document: {Path(path_arg).name}"})
+                console.print("\n[bold green]Plamma:[/bold green]")
+                response = stream_and_collect(messages)
+                session.add("user", f"[Document: {Path(path_arg).name}]")
+                session.add("assistant", response)
+
+        elif low.startswith("/d2 "):
+            query = user_input[4:].strip()
+            if not query:
+                console.print("[red]Usage: /d2 <query>[/red]")
+            else:
+                if _TORISO_MODE:
+                    with console.status("[dim]Rotating Tor circuit (toriso)...[/dim]"):
+                        new_identity()
+                with console.status("[magenta]Searching I2P network...[/magenta]"):
+                    results = search_i2p(query)
+                idx = 1
+                for r in results:
+                    if "error" not in r:
+                        r["index"] = idx
+                        idx += 1
+                useful = [r for r in results if "error" not in r]
+                errors = [r for r in results if "error" in r]
+                for e in errors:
+                    console.print(f"[yellow]  ! {e['error']}[/yellow]")
+                messages = [{"role": "system", "content": get_system_prompt()}]
+                messages += session.get_context()
+                if useful:
+                    console.print(f"[magenta]● I2P[/magenta]  [dim]{len(useful)} result(s)[/dim]")
+                    messages.append({
+                        "role": "system",
+                        "content": format_for_llm(useful) + "\n\nAnswer the question using the I2P results above. Cite sources inline as [1], [2], etc.",
+                    })
+                else:
+                    console.print("[yellow]⚠ No I2P results — is I2P running?[/yellow]")
+                    messages.append({"role": "system", "content": OFFLINE_NOTICE})
+                messages.append({"role": "user", "content": query})
+                console.print("\n[bold green]Plamma:[/bold green]")
+                response = stream_and_collect(messages)
+                if useful:
+                    footer = format_citations(useful)
+                    sys.stdout.write(footer + "\n\n")
+                    sys.stdout.flush()
+                    response += footer
+                session.add("user", query)
+                session.add("assistant", response)
 
         elif low == "/clear":
             session.clear()

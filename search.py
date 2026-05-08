@@ -1,4 +1,6 @@
 import re
+import socket
+import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
 from tor_proxy import get_session
@@ -522,3 +524,112 @@ def fetch_finviz(tickers: list[str]) -> str:
     if not rows:
         return ""
     return "Live stock data:\n" + "\n".join(rows)
+
+
+# ── I2P support ───────────────────────────────────────────────────────────────
+
+I2P_PROXY_PORT = int(__import__("os").environ.get("I2P_HTTP_PORT", "4444"))
+
+# Known I2P search engines (eepsites reachable only via the I2P HTTP proxy)
+_I2P_ENGINES = [
+    "http://notbob.i2p/?q={q}",
+    "http://ransack.i2p/search?q={q}",
+]
+
+
+def _i2p_available() -> bool:
+    try:
+        c = socket.create_connection(("127.0.0.1", I2P_PROXY_PORT), timeout=1)
+        c.close()
+        return True
+    except Exception:
+        return False
+
+
+def get_i2p_session() -> requests.Session:
+    s = requests.Session()
+    proxy = f"http://127.0.0.1:{I2P_PROXY_PORT}"
+    s.proxies = {"http": proxy, "https": proxy}
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0",
+        "Accept-Language": "en-US,en;q=0.5",
+    })
+    return s
+
+
+def search_i2p(query: str, max_results: int = 6) -> list[dict]:
+    """Search I2P eepsites via the local I2P HTTP proxy."""
+    if not _i2p_available():
+        return [{"error": f"I2P proxy not running on port {I2P_PROXY_PORT}. Start I2P first.", "source": "i2p"}]
+
+    s = get_i2p_session()
+    results: list[dict] = []
+
+    for engine_tpl in _I2P_ENGINES:
+        if sum(1 for r in results if "error" not in r) >= max_results:
+            break
+        url = engine_tpl.format(q=query)
+        try:
+            r = s.get(url, timeout=60)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                text = link.get_text(strip=True)
+                if not text or len(text) < 4:
+                    continue
+                if ".i2p" not in href and not href.startswith("/"):
+                    continue
+                snippet = ""
+                if link.parent:
+                    snippet = link.parent.get_text(separator=" ", strip=True)[:250]
+                results.append({
+                    "index": len(results) + 1,
+                    "title": text,
+                    "url": href,
+                    "snippet": snippet,
+                    "source": "i2p",
+                })
+                if len(results) >= max_results:
+                    break
+        except Exception as e:
+            results.append({"error": f"I2P engine {url} failed: {e}", "source": "i2p"})
+
+    return results or [{"error": "No I2P results found.", "source": "i2p"}]
+
+
+# ── URL fetch (for /fetch command) ────────────────────────────────────────────
+
+def fetch_url_content(url: str, max_chars: int = 8000) -> dict:
+    """
+    Fetch a URL through Tor and return stripped text content.
+    Returns {"content": str, "url": str, "title": str} or {"error": str, "url": str}.
+    """
+    s = get_session()
+    try:
+        r = s.get(url, timeout=30)
+        if r.status_code != 200:
+            return {"error": f"HTTP {r.status_code}", "url": url}
+
+        ct = r.headers.get("content-type", "")
+        if "html" in ct:
+            soup = BeautifulSoup(r.text, "html.parser")
+            title = soup.title.get_text(strip=True) if soup.title else url
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
+                tag.decompose()
+            main = soup.find("main") or soup.find("article") or soup.find("body") or soup
+            text = main.get_text(separator="\n", strip=True)
+        else:
+            title = url
+            text = r.text
+
+        # Collapse blank lines
+        lines = [l for l in text.splitlines() if l.strip()]
+        text = "\n".join(lines)
+
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n\n[truncated — {len(text)} chars total]"
+
+        return {"content": text, "url": url, "title": title}
+    except Exception as e:
+        return {"error": str(e), "url": url}
