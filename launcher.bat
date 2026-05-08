@@ -4,17 +4,16 @@ chcp 65001 >nul
 title Plamma -- Starting
 cls
 
-:: ============================================================
-::  CONFIGURATION — edit these two lines to match your system
-:: ============================================================
-if not defined TOR_EXE  set "TOR_EXE=%APPDATA%\tor\tor\tor.exe"
-if not defined TOR_TORRC set "TOR_TORRC=%APPDATA%\tor\torrc"
-:: ============================================================
+REM ============================================================
+REM  CONFIGURATION - edit these two lines to match your system
+REM ============================================================
+if not defined TOR_EXE  set "TOR_EXE=%USERPROFILE%\tor\tor\tor.exe"
+if not defined TOR_TORRC set "TOR_TORRC=%USERPROFILE%\tor\torrc"
+REM ============================================================
 
+type "%~dp0banner.txt"
 echo.
-echo  ================================================
 echo    P L A M M A  --  Private  Local  AI
-echo  ================================================
 echo.
 
 :: ===========================================================
