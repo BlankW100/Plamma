@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import re
 import base64
 import subprocess
 import tempfile
@@ -347,7 +348,7 @@ class _Spinner:
 # ── streaming output ──────────────────────────────────────────────────────────
 
 def _has_markdown(text: str) -> bool:
-    """True if text looks like it contains a table, code fence, or heading."""
+    """True if text contains a table, code fence, or heading."""
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("|") and s.endswith("|") and s.count("|") >= 3:
@@ -359,6 +360,73 @@ def _has_markdown(text: str) -> bool:
     return False
 
 
+def _render_response(text: str):
+    """
+    Render a model response with proper formatting.
+    Markdown tables are rendered as Rich Table objects (with row lines so cells
+    never merge into a wall of text).  Everything else goes through Markdown.
+    """
+    lines = text.splitlines()
+    sections: list[tuple[str, list[str]]] = []
+    in_table = False
+    buf: list[str] = []
+
+    for line in lines:
+        s = line.strip()
+        is_table_line = s.startswith("|") and s.endswith("|")
+        if is_table_line:
+            if not in_table:
+                if buf:
+                    sections.append(("text", buf))
+                buf = []
+                in_table = True
+            buf.append(line)
+        else:
+            if in_table:
+                sections.append(("table", buf))
+                buf = []
+                in_table = False
+            buf.append(line)
+
+    if buf:
+        sections.append(("table" if in_table else "text", buf))
+
+    for kind, chunk_lines in sections:
+        content = "\n".join(chunk_lines)
+        if kind == "table":
+            _render_md_table(content)
+        else:
+            stripped = content.strip()
+            if stripped:
+                console.print(Markdown(stripped))
+    console.print()
+
+
+def _render_md_table(table_str: str):
+    """Parse a Markdown table string and render it as a Rich Table with row lines."""
+    rows = [l for l in table_str.strip().splitlines() if l.strip()]
+    if len(rows) < 2:
+        console.print(table_str)
+        return
+
+    def _cells(row: str) -> list[str]:
+        return [c.strip() for c in row.strip().strip("|").split("|")]
+
+    headers   = _cells(rows[0])
+    data_rows = [_cells(r) for r in rows[2:] if not re.match(r"^\s*\|[\s\-|]+\|\s*$", r)]
+
+    table = Table(show_lines=True, header_style="bold cyan", show_edge=True, padding=(0, 1))
+    for h in headers:
+        table.add_column(h)
+
+    for row in data_rows:
+        while len(row) < len(headers):
+            row.append("")
+        table.add_row(*row[: len(headers)])
+
+    console.print(table)
+
+
 def _write(text: str):
     if not text:
         return
@@ -368,23 +436,19 @@ def _write(text: str):
 
 def stream_and_collect(messages: list[dict]) -> str:
     """
-    Stream a response from the LLM.
-    Handles (tag, text) tuples from stream_response:
-      "think" — model reasoning; shown in dim if _SHOW_THINKING, else silent
-      "text"  — final answer tokens; always shown
-      "error" — always shown
-    After streaming, if the response contains Markdown tables / code fences /
-    headings, the raw text is erased and re-rendered with Rich Markdown.
+    Collect a response from the LLM.
+    Text is buffered silently while the spinner runs, then rendered once:
+      - Markdown (tables / code / headings) → _render_response (rich formatting)
+      - Plain text → streamed out directly after collection
+    Thinking tags are shown live only when _SHOW_THINKING is on.
     """
     global _SHOW_THINKING
     collected: list[str] = []
-    text_lines = 0  # newlines printed during the text phase
 
     spinner = _Spinner("thinking")
     spinner.start()
 
-    in_thinking    = False
-    got_first_text = False
+    in_thinking = False
 
     for tag, chunk in stream_response(messages, think=_SHOW_THINKING):
         if not chunk:
@@ -394,22 +458,19 @@ def stream_and_collect(messages: list[dict]) -> str:
             if _SHOW_THINKING:
                 if not in_thinking:
                     spinner.stop()
-                    sys.stdout.write("\033[2m\033[3m◌ thinking:\033[23m\n")  # dim+italic header, drop italic
+                    sys.stdout.write("\033[2m\033[3m◌ thinking:\033[23m\n")
                     in_thinking = True
-                _write(chunk)   # still inside \033[2m dim scope
+                _write(chunk)
             # if hiding: spinner keeps running, thinking discarded
 
         elif tag == "text":
             if in_thinking:
-                # close the thinking block
                 sys.stdout.write("\033[0m\n\n")
                 in_thinking = False
-            if not got_first_text:
-                spinner.stop()
-                got_first_text = True
+            if not collected:
+                spinner._label = "generating"  # first token arrived
             collected.append(chunk)
-            text_lines += chunk.count("\n")
-            _write(chunk)
+            # intentionally NOT writing here — buffer silently
 
         else:  # "error"
             if in_thinking:
@@ -418,21 +479,16 @@ def stream_and_collect(messages: list[dict]) -> str:
             spinner.stop()
             _write(chunk)
 
-    # clean up any unclosed thinking block
     if in_thinking:
         sys.stdout.write("\033[0m\n\n")
-    if not got_first_text:
-        spinner.stop()
-
-    _write("\n")
-    text_lines += 1  # the trailing newline
+    spinner.stop()
 
     full = "".join(collected)
     if _has_markdown(full):
-        # Erase the streamed raw text and re-render as formatted Markdown
-        sys.stdout.write(f"\033[{text_lines}A\033[J")
-        sys.stdout.flush()
-        console.print(Markdown(full))
+        _render_response(full)   # rich tables + formatted markdown
+    else:
+        _write(full)
+        _write("\n")
 
     return full
 

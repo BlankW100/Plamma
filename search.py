@@ -317,7 +317,7 @@ def format_citations(results: list[dict]) -> str:
 
 
 _COMPANY_MAP: dict[str, str] = {
-    # common names + misspellings → canonical ticker
+    # US / global — common names + misspellings → canonical ticker
     "nvidia": "NVDA", "nvdia": "NVDA", "nvda": "NVDA",
     "apple": "AAPL", "aapl": "AAPL",
     "google": "GOOGL", "alphabet": "GOOGL", "googl": "GOOGL", "goog": "GOOG",
@@ -329,7 +329,7 @@ _COMPANY_MAP: dict[str, str] = {
     "amd": "AMD", "intel": "INTC",
     "qualcomm": "QCOM", "broadcom": "AVGO",
     "tsmc": "TSM", "asml": "ASML", "arm": "ARM",
-    "berkshire": "BRK.B",
+    "berkshire": "BRK-B",
     "jpmorgan": "JPM", "jp morgan": "JPM",
     "visa": "V", "mastercard": "MA",
     "walmart": "WMT", "disney": "DIS",
@@ -339,6 +339,21 @@ _COMPANY_MAP: dict[str, str] = {
     "snowflake": "SNOW", "shopify": "SHOP",
     "spotify": "SPOT", "coinbase": "COIN",
     "bitcoin": "BTC-USD", "ethereum": "ETH-USD",
+    # Malaysia (Bursa) — Yahoo Finance uses .KL suffix
+    "ecoshop": "5228.KL", "eco shop": "5228.KL",
+    "mrdiy": "5296.KL", "mr diy": "5296.KL", "mr.diy": "5296.KL",
+    "maybank": "1155.KL", "cimb": "1023.KL", "tenaga": "5347.KL",
+    "petronas": "5183.KL", "axiata": "6888.KL", "ioicorp": "1961.KL",
+    "rhb": "1066.KL", "public bank": "1295.KL", "hong leong": "5819.KL",
+    # Singapore (SGX)
+    "dbs": "D05.SI", "ocbc": "O39.SI", "uob": "U11.SI",
+    "singtel": "Z74.SI", "capitaland": "9CI.SI",
+    # Hong Kong (HKEX)
+    "tencent": "0700.HK", "alibaba": "9988.HK", "baba": "BABA",
+    "meituan": "3690.HK", "xiaomi": "1810.HK",
+    # UK (LSE)
+    "bp": "BP.L", "shell": "SHEL.L", "hsbc": "HSBA.L",
+    "unilever": "ULVR.L", "astrazeneca": "AZN.L",
 }
 
 
@@ -373,47 +388,137 @@ def needs_live_data(message: str) -> tuple[bool, list[str]]:
     return (has_keyword or has_phrase or bool(tickers)), tickers
 
 
+_YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
+
+
+def _fetch_yahoo_price(ticker: str) -> dict | None:
+    """Fetch price data from Yahoo Finance JSON API. Works for any global exchange."""
+    s = get_session()
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        "?interval=1d&range=1d"
+    )
+    try:
+        r = s.get(url, timeout=15, headers=_YAHOO_HEADERS)
+        if r.status_code != 200:
+            return None
+        result = r.json().get("chart", {}).get("result")
+        if not result:
+            return None
+        meta = result[0].get("meta", {})
+        price = meta.get("regularMarketPrice")
+        if not price:
+            return None
+        currency = meta.get("currency", "")
+        return {
+            "price":    str(round(price, 4)),
+            "currency": currency,
+            "change":   str(round(meta.get("regularMarketChangePercent", 0), 2)) + "%",
+            "volume":   str(meta.get("regularMarketVolume", "?")),
+            "52w_high": str(round(meta.get("fiftyTwoWeekHigh", 0), 2)),
+            "52w_low":  str(round(meta.get("fiftyTwoWeekLow", 0), 2)),
+            "exchange": meta.get("exchangeName", ""),
+        }
+    except Exception:
+        return None
+
+
+def _search_yahoo_ticker(name: str) -> str | None:
+    """Resolve a company name to a Yahoo Finance ticker symbol via their search API."""
+    s = get_session()
+    url = f"https://query2.finance.yahoo.com/v1/finance/search?q={name}&quotesCount=3&newsCount=0"
+    try:
+        r = s.get(url, timeout=10, headers=_YAHOO_HEADERS)
+        if r.status_code != 200:
+            return None
+        for quote in r.json().get("quotes", []):
+            symbol = quote.get("symbol", "")
+            # Prefer equity-type results
+            if quote.get("quoteType") in ("EQUITY", "ETF") and symbol:
+                return symbol
+    except Exception:
+        pass
+    return None
+
+
 def fetch_finviz(tickers: list[str]) -> str:
-    """Fetch live price/market data from Finviz for each ticker. Returns formatted block."""
+    """
+    Fetch live stock data for each ticker.
+    Tries Finviz first (US stocks, rich data). Falls back to Yahoo Finance,
+    which supports global exchanges (KLSE, SGX, HKEX, LSE, etc.).
+    If a ticker yields no result on either source, attempts a Yahoo name-search.
+    """
     s = get_session()
     _FIELDS = {"Price", "Change", "Volume", "Market Cap", "P/E", "52W High", "52W Low"}
     rows = []
 
     for ticker in tickers[:6]:
+        data_line = None
+
+        # ── 1. Finviz (US-listed stocks) ──────────────────────────────────────
         try:
             r = None
-            for attempt in range(3):
+            for _ in range(2):
                 try:
-                    r = s.get(FINVIZ_URL + ticker, timeout=15)
+                    r = s.get(FINVIZ_URL + ticker, timeout=12)
                     if r.status_code == 200:
                         break
-                    s = get_session()  # fresh circuit on failure
+                    s = get_session()
                 except Exception:
                     s = get_session()
-            if r is None or r.status_code != 200:
-                rows.append(f"  {ticker}: HTTP {r.status_code if r else 'no response'}")
-                continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            all_tds = soup.find_all("td")
-            data: dict[str, str] = {}
-            for i, td in enumerate(all_tds):
-                txt = td.get_text(strip=True)
-                if txt in _FIELDS and i + 1 < len(all_tds):
-                    data[txt] = all_tds[i + 1].get_text(strip=True)
-            if not data.get("Price"):
-                rows.append(f"  {ticker}: price not found (may be invalid ticker)")
-                continue
-            rows.append(
-                f"  {ticker}: Price=${data.get('Price','?')}  "
-                f"Change={data.get('Change','?')}  "
-                f"MarketCap={data.get('Market Cap','?')}  "
-                f"P/E={data.get('P/E','?')}  "
-                f"Volume={data.get('Volume','?')}  "
-                f"52W={data.get('52W High','?')}"
-            )
-        except Exception as e:
-            rows.append(f"  {ticker}: error — {str(e)[:80]}")
+            if r and r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                all_tds = soup.find_all("td")
+                fz: dict[str, str] = {}
+                for i, td in enumerate(all_tds):
+                    txt = td.get_text(strip=True)
+                    if txt in _FIELDS and i + 1 < len(all_tds):
+                        fz[txt] = all_tds[i + 1].get_text(strip=True)
+                if fz.get("Price"):
+                    data_line = (
+                        f"  {ticker} [Finviz]: Price=${fz['Price']}  "
+                        f"Change={fz.get('Change','?')}  "
+                        f"MarketCap={fz.get('Market Cap','?')}  "
+                        f"P/E={fz.get('P/E','?')}  "
+                        f"Volume={fz.get('Volume','?')}  "
+                        f"52W-High={fz.get('52W High','?')}"
+                    )
+        except Exception:
+            pass
+
+        # ── 2. Yahoo Finance (global fallback) ────────────────────────────────
+        if not data_line:
+            ydata = _fetch_yahoo_price(ticker)
+            if ydata:
+                cur  = ydata["currency"]
+                exch = f" [{ydata['exchange']}]" if ydata["exchange"] else ""
+                data_line = (
+                    f"  {ticker}{exch} [Yahoo]: Price={cur}{ydata['price']}  "
+                    f"Change={ydata['change']}  "
+                    f"Volume={ydata['volume']}  "
+                    f"52W {ydata['52w_low']}–{ydata['52w_high']}"
+                )
+
+        # ── 3. Yahoo name-search (unknown / non-standard ticker strings) ──────
+        if not data_line:
+            resolved = _search_yahoo_ticker(ticker)
+            if resolved and resolved != ticker:
+                ydata = _fetch_yahoo_price(resolved)
+                if ydata:
+                    cur  = ydata["currency"]
+                    exch = f" [{ydata['exchange']}]" if ydata["exchange"] else ""
+                    data_line = (
+                        f"  {ticker}→{resolved}{exch} [Yahoo]: Price={cur}{ydata['price']}  "
+                        f"Change={ydata['change']}  "
+                        f"Volume={ydata['volume']}  "
+                        f"52W {ydata['52w_low']}–{ydata['52w_high']}"
+                    )
+
+        rows.append(data_line or f"  {ticker}: not found on Finviz or Yahoo Finance")
 
     if not rows:
         return ""
-    return "Live stock data (Finviz via Tor):\n" + "\n".join(rows)
+    return "Live stock data:\n" + "\n".join(rows)
