@@ -8,16 +8,6 @@
 
 Plamma is a terminal-based AI assistant that runs entirely on your machine. It uses a locally hosted model via [Ollama](https://ollama.com), routes all web searches anonymously through [Tor](https://www.torproject.org), and keeps no data off your device. No accounts, no cloud, no logs.
 
-```
- ____  _        _    __  __  __  __    _
-|  _ \| |      / \  |  \/  ||  \/  |  / \
-| |_) | |     / _ \ | |\/| || |\/| | / _ \
-|  __/| |___ / ___ \| |  | || |  | |/ ___ \
-|_|   |_____/_/   \_\_|  |_||_|  |_/_/   \_\
-```
-
----
-
 ## Features
 
 - **Fully local** — model runs on your hardware via Ollama, nothing is sent to external servers
