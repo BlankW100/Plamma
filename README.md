@@ -1,3 +1,7 @@
+<p align="center">
+  <img width="1280" height="640" alt="Plamma" src="https://github.com/user-attachments/assets/5f7aabe4-df51-43bf-99a9-6024ea9a5898" />
+</p>
+
 # Plamma
 
 **Private · Local · Uncensored**
